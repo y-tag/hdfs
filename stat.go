@@ -106,3 +106,15 @@ func (fi *FileInfo) OwnerGroup() string {
 func (fi *FileInfo) AccessTime() time.Time {
 	return time.Unix(int64(fi.status.GetAccessTime())/1000, 0)
 }
+
+// BlockReplication returns the number of the replication. It's not part of the
+// os.FileInfo interface.
+func (fi *FileInfo) BlockReplication() uint32 {
+	return fi.status.GetBlockReplication()
+}
+
+// BlockSize returns the block size of the file. It's not part of the
+// os.FileInfo interface.
+func (fi *FileInfo) BlockSize() uint64 {
+	return fi.status.GetBlocksize()
+}

@@ -38,14 +38,7 @@ func (c *Client) Create(name string) (*FileWriter, error) {
 		return nil, &os.PathError{"create", name, err}
 	}
 
-	defaults, err := c.fetchDefaults()
-	if err != nil {
-		return nil, err
-	}
-
-	replication := int(defaults.GetReplication())
-	blockSize := int64(defaults.GetBlockSize())
-	return c.CreateFile(name, replication, blockSize, 0644)
+	return c.CreateFile(name, 0, 0, 0644)
 }
 
 // CreateFile opens a new file in HDFS with the given replication, block size,
@@ -53,6 +46,24 @@ func (c *Client) Create(name string) (*FileWriter, error) {
 // the way that HDFS writes are buffered and acknowledged asynchronously, it is
 // very important that Close is called after all data has been written.
 func (c *Client) CreateFile(name string, replication int, blockSize int64, perm os.FileMode) (*FileWriter, error) {
+	if replication == 0 || blockSize == 0 {
+		defaults, err := c.fetchDefaults()
+		if err != nil {
+			return nil, err
+		}
+
+		if replication == 0 {
+			replication = int(defaults.GetReplication())
+		}
+		if blockSize == 0 {
+			blockSize = int64(defaults.GetBlockSize())
+		}
+	}
+
+	if perm == 0 {
+		perm = 0644
+	}
+
 	createReq := &hdfs.CreateRequestProto{
 		Src:          proto.String(name),
 		Masked:       &hdfs.FsPermissionProto{Perm: proto.Uint32(uint32(perm))},
@@ -188,16 +199,31 @@ func (f *FileWriter) Write(b []byte) (int, error) {
 	return off, nil
 }
 
-// Flush flushes any buffered data out to the datanodes. Even immediately after
-// a call to Flush, it is still necessary to call Close once all data has been
-// written.
+// Flush flushes any buffered data out to the datanodes. When it succeeds, the
+// flushed data become visible to new readers.
 func (f *FileWriter) Flush() error {
 	if f.closed {
 		return io.ErrClosedPipe
 	}
 
-	if f.blockWriter != nil {
-		return f.blockWriter.Flush()
+	if f.blockWriter == nil {
+		return nil
+	}
+
+	if err := f.blockWriter.Flush(); err != nil {
+		return err
+	}
+
+	fsyncReq := &hdfs.FsyncRequestProto{
+		Src:             proto.String(f.name),
+		Client:          proto.String(f.blockWriter.ClientName),
+		LastBlockLength: proto.Int64(f.blockWriter.Offset),
+	}
+	fsyncResp := &hdfs.FsyncResponseProto{}
+
+	err := f.client.namenode.Execute("fsync", fsyncReq, fsyncResp)
+	if err != nil {
+		return &os.PathError{"fsync", f.name, interpretException(err)}
 	}
 
 	return nil
